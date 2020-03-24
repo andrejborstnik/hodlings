@@ -12,6 +12,14 @@ client = rest.wrap require('rest/interceptor/mime')
              .wrap require('rest/interceptor/retry', ), initial: timespan.from-seconds(5).total-milliseconds!
              .wrap require('rest/interceptor/timeout'), timeout: timespan.from-seconds(80).total-milliseconds!
              .wrap require('rest/interceptor/pathPrefix'), prefix: data-url
+
+data-url-new = "https://pro-api.coinmarketcap.com/v1/"
+client-new = rest.wrap require('rest/interceptor/mime')
+             .wrap require('rest/interceptor/errorCode')
+             .wrap require('rest/interceptor/retry', ), initial: timespan.from-seconds(5).total-milliseconds!
+             .wrap require('rest/interceptor/timeout'), timeout: timespan.from-seconds(80).total-milliseconds!
+             .wrap require('rest/interceptor/pathPrefix'), prefix: data-url-new
+
 require! bluebird: Promise
 require! <[ ./lib/portfolio ./lib/cli-options ]>
 
@@ -64,12 +72,12 @@ else
     process.exit -1
 
 function find-currency(currencies, id_or_symbol)
-  currency = currencies.find (currency) -> currency.id.toLowerCase() == id_or_symbol.toLowerCase()
+  currency = currencies.find (currency) -> currency.slug.toLowerCase() == id_or_symbol.toLowerCase()
   return if currency then currency else currencies.find (currency) -> currency.symbol.toLowerCase() == id_or_symbol.toLowerCase()
 
 function write-last-values(details, currencies, totals, hodlings-signature)
   last-values =
-    price_btc_usd: find-currency(currencies, "bitcoin").price_usd
+    price_btc_usd: find-currency(currencies, "bitcoin").quote[options.convert.toUpperCase!].price
     totals: totals
     hodlings-signature: hodlings-signature
     portfolio: details |> map (entry) -> { id: find-currency(currencies, entry.id).id, price_btc: entry.price-btc }
@@ -91,29 +99,29 @@ function get-latest(hodlings)
         console.error "Unknown coin: #{coin}"
         return
 
-      fx = options.convert.toLowerCase!
-      price = currency["price_#{fx}"] |> parseFloat
-      price-btc = currency.price_btc |> parseFloat
-      volume = (currency["24h_volume_#{fx}"] |> parseFloat) / (bitcoin["24h_volume_#{fx}"] |> parseFloat)
+      fx = options.convert.toUpperCase!
+      price = currency.quote[fx].price |> parseFloat
+      price-btc = "0" |> parseFloat
+      volume = (currency.quote[fx].volume_24h |> parseFloat) / (bitcoin.quote[fx].volume_24h |> parseFloat)
 
       amount-for-currency = (*) amount
       value = amount-for-currency price
       value-btc = amount-for-currency price-btc
-      value-eth = value-btc / ethereum.price_btc
+      value-eth = value-btc / 1
 
       changes = {}
 
-      change-eth-week = ethereum.percent_change_7d |> parseFloat
-      changes.week-vs-eth = (currency.percent_change_7d - change-eth-week) / 100
+      change-eth-week = ethereum.quote[fx].percent_change_7d |> parseFloat
+      changes.week-vs-eth = (currency.quote[fx].percent_change_7d - change-eth-week) / 100
 
-      change-btc-week = bitcoin.percent_change_7d |> parseFloat
-      changes.week-vs-btc = (currency.percent_change_7d - change-btc-week) / 100
+      change-btc-week = bitcoin.quote[fx].percent_change_7d |> parseFloat
+      changes.week-vs-btc = (currency.quote[fx].percent_change_7d - change-btc-week) / 100
 
       if last-values
         last-currency = last-values.portfolio.find (entry) -> entry.id == find-currency(currencies, coin).id
         if last-currency
-          price_btc_usd = bitcoin.price_usd |> parseFloat
-          changes.vs-usd = (price_btc_usd * price-btc) / (last-currency.price_btc * last-values.price_btc_usd) - 1
+          price_btc_usd = "0" |> parseFloat
+          changes.vs-usd = 0
 
       return
         count: amount
@@ -129,8 +137,8 @@ function get-latest(hodlings)
         symbol: currency.symbol
         amount: amount
         volume: volume
-        market-cap: currency["market_cap_#{fx}"] |> parseFloat
-        rank: currency.rank
+        market-cap: currency.quote[fx].market_cap |> parseFloat
+        rank: currency.cmc_rank
         currency: currency
 
     details =
@@ -180,13 +188,18 @@ function get-latest(hodlings)
       global: global
 
   convert-string =
-    | options.convert is /^USD$/i => "?limit=0"
-    | otherwise => "?convert=#{options.convert}&limit=0"
+    | options.convert is /^USD$/i => "?start=1&limit=5000"
+    | otherwise => "?convert=#{options.convert}&start=1&limit=5000"
 
   make-request = (url) ->
     url + convert-string
     |> client
     |> (.entity!)
+
+  make-request-new = (url) ->
+      {method: "GET",path: url + convert-string,headers: { "X-CMC_PRO_API_KEY": "key"}}
+      |> client-new
+      |> (.entity!)
 
   last-values = undefined
   if existsSync lastValuesFile
@@ -194,8 +207,8 @@ function get-latest(hodlings)
       last-values = JSON.parse (readFileSync lastValuesFile)
 
   Promise.join do
-    make-request(\global/)
-    make-request(\ticker/).then (entity) -> entity
+    {}
+    make-request-new(\cryptocurrency/listings/latest).then (entity) -> entity.data
     last-values
     process-data
   .catch (e) !->
